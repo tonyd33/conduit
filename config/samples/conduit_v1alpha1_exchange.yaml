@@ -1,0 +1,48 @@
+apiVersion: conduit.mnke.org/v1alpha1
+kind: Exchange
+metadata:
+  name: example-exchange
+  labels:
+    app.kubernetes.io/name: conduit
+    app.kubernetes.io/managed-by: kustomize
+  annotations:
+    # Optional: Enable archival by external systems
+    archival.conduit.mnke.org/enabled: "true"
+    archival.conduit.mnke.org/destination: "s3://my-bucket/exchanges/"
+    archival.conduit.mnke.org/format: "jsonl"
+    archival.conduit.mnke.org/on-completion: "true"
+spec:
+  # Container image for the workload
+  # This can be any application that communicates via NATS JetStream
+  # Examples: AI agents, data processors, workflow engines, etc.
+  image: "conduit/examples/echo:go"
+  imagePullPolicy: IfNotPresent
+
+  # Resource requirements
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "500m"
+    limits:
+      memory: "1Gi"
+      cpu: "1000m"
+
+  # Environment variables for your application
+  env:
+    - name: APP_CONFIG
+      value: "production"
+    - name: LOG_LEVEL
+      value: "info"
+
+  # NATS stream configuration
+  stream:
+    retention:
+      maxAge: "168h"  # 7 days
+      maxMessages: 100000
+      maxBytes: "1Gi"
+
+  # Recovery configuration
+  recovery:
+    maxRestarts: 5
+    backoffLimit: 3
+    checkpointInterval: "5m"

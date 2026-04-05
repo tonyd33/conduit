@@ -1,0 +1,348 @@
+basePath: /api/v1
+definitions:
+  internal_apiserver.ConnectionInfo:
+    properties:
+      inputSubject:
+        type: string
+      natsURL:
+        description: NATS connection details
+        type: string
+      outputSubject:
+        type: string
+      podName:
+        description: Worker pod information
+        type: string
+      podPhase:
+        type: string
+      ready:
+        description: Status
+        type: boolean
+      streamName:
+        description: Stream and subject information
+        type: string
+    type: object
+  internal_apiserver.ConsumerConfig:
+    properties:
+      ackPolicy:
+        description: '"explicit", "all", or "none"'
+        type: string
+      ackWait:
+        description: Duration string like "30s"
+        type: string
+      filterSubject:
+        type: string
+      headersOnly:
+        type: boolean
+      maxAckPending:
+        type: integer
+      maxDeliver:
+        type: integer
+      maxWaiting:
+        type: integer
+      replayPolicy:
+        description: '"instant" or "original"'
+        type: string
+    type: object
+  internal_apiserver.CreateExchangeRequest:
+    properties:
+      consumerConfig:
+        allOf:
+        - $ref: '#/definitions/internal_apiserver.ConsumerConfig'
+        description: JetStream consumer configuration
+      env:
+        description: Environment variables for the worker pod
+        items:
+          $ref: '#/definitions/internal_apiserver.EnvVar'
+        type: array
+      image:
+        description: Image for the worker pod (defaults to conduit default image)
+        type: string
+      imagePullPolicy:
+        description: ImagePullPolicy for the worker pod
+        type: string
+      name:
+        description: Name of the Exchange (must be unique within namespace)
+        type: string
+      namespace:
+        description: Namespace to create the Exchange in (defaults to "default")
+        type: string
+      recovery:
+        allOf:
+        - $ref: '#/definitions/internal_apiserver.RecoveryConfig'
+        description: Recovery configuration
+      resources:
+        allOf:
+        - $ref: '#/definitions/internal_apiserver.ResourceRequirements'
+        description: Resource requests and limits
+      streamConfig:
+        allOf:
+        - $ref: '#/definitions/internal_apiserver.StreamConfig'
+        description: JetStream stream configuration
+    type: object
+  internal_apiserver.EnvVar:
+    properties:
+      name:
+        type: string
+      value:
+        type: string
+    type: object
+  internal_apiserver.ErrorResponse:
+    properties:
+      code:
+        type: integer
+      details:
+        type: string
+      error:
+        type: string
+    type: object
+  internal_apiserver.ExchangeResponse:
+    properties:
+      connectionInfo:
+        allOf:
+        - $ref: '#/definitions/internal_apiserver.ConnectionInfo'
+        description: Connection information for clients
+      message:
+        type: string
+      name:
+        description: Exchange metadata
+        type: string
+      namespace:
+        type: string
+      phase:
+        description: Current status
+        type: string
+      uid:
+        type: string
+    type: object
+  internal_apiserver.ListExchangesResponse:
+    properties:
+      exchanges:
+        items:
+          $ref: '#/definitions/internal_apiserver.ExchangeResponse'
+        type: array
+      total:
+        type: integer
+    type: object
+  internal_apiserver.RecoveryConfig:
+    properties:
+      backoffLimit:
+        type: integer
+      maxRestarts:
+        type: integer
+      restartPolicy:
+        description: '"Always", "OnFailure", or "Never"'
+        type: string
+    type: object
+  internal_apiserver.ResourceList:
+    properties:
+      cpu:
+        type: string
+      memory:
+        type: string
+    type: object
+  internal_apiserver.ResourceRequirements:
+    properties:
+      limits:
+        $ref: '#/definitions/internal_apiserver.ResourceList'
+      requests:
+        $ref: '#/definitions/internal_apiserver.ResourceList'
+    type: object
+  internal_apiserver.StreamConfig:
+    properties:
+      maxAge:
+        description: Duration string like "24h"
+        type: string
+      maxBytes:
+        type: integer
+      maxConsumers:
+        type: integer
+      maxMsgs:
+        type: integer
+      noAck:
+        type: boolean
+      replicas:
+        type: integer
+      retention:
+        description: '"limits", "interest", or "workqueue"'
+        type: string
+      subjects:
+        items:
+          type: string
+        type: array
+    type: object
+host: localhost:8090
+info:
+  contact:
+    email: support@conduit.example.com
+    name: API Support
+    url: https://github.com/tonyd33/conduit
+  description: API server for managing Conduit exchanges
+  license:
+    name: Apache 2.0
+    url: http://www.apache.org/licenses/LICENSE-2.0.html
+  termsOfService: http://swagger.io/terms/
+  title: Conduit API
+  version: "1.0"
+paths:
+  /exchanges:
+    get:
+      consumes:
+      - application/json
+      description: Get a list of all exchanges, optionally filtered by namespace
+      parameters:
+      - description: Namespace to filter exchanges
+        in: query
+        name: namespace
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_apiserver.ListExchangesResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_apiserver.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_apiserver.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List exchanges
+      tags:
+      - exchanges
+    post:
+      consumes:
+      - application/json
+      description: Create a new exchange with the specified configuration
+      parameters:
+      - description: Exchange configuration
+        in: body
+        name: exchange
+        required: true
+        schema:
+          $ref: '#/definitions/internal_apiserver.CreateExchangeRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/internal_apiserver.ExchangeResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_apiserver.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_apiserver.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_apiserver.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create an exchange
+      tags:
+      - exchanges
+  /exchanges/{namespace}/{name}:
+    delete:
+      consumes:
+      - application/json
+      description: Delete a specific exchange by namespace and name
+      parameters:
+      - description: Namespace
+        in: path
+        name: namespace
+        required: true
+        type: string
+      - description: Exchange name
+        in: path
+        name: name
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_apiserver.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_apiserver.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/internal_apiserver.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Delete an exchange
+      tags:
+      - exchanges
+    get:
+      consumes:
+      - application/json
+      description: Get details of a specific exchange by namespace and name
+      parameters:
+      - description: Namespace
+        in: path
+        name: namespace
+        required: true
+        type: string
+      - description: Exchange name
+        in: path
+        name: name
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_apiserver.ExchangeResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_apiserver.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_apiserver.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/internal_apiserver.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get an exchange
+      tags:
+      - exchanges
+  /healthz:
+    get:
+      description: Check if the API server is healthy
+      produces:
+      - text/plain
+      responses:
+        "200":
+          description: ok
+          schema:
+            type: string
+      summary: Health check
+      tags:
+      - health
+securityDefinitions:
+  BearerAuth:
+    description: Type "Bearer" followed by a space and your API key.
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"
