@@ -8,22 +8,15 @@ import (
 // CreateExchangeRequest represents the API request to create an Exchange
 type CreateExchangeRequest struct {
 	// Name of the Exchange (must be unique within namespace)
-	Name string `json:"name"`
+	Name string `json:"name" example:"my-exchange"`
 
 	// Namespace to create the Exchange in (defaults to "default")
-	Namespace string `json:"namespace,omitempty"`
+	Namespace string `json:"namespace,omitempty" example:"default"`
 
-	// Image for the worker pod (defaults to conduit default image)
-	Image string `json:"image,omitempty"`
-
-	// ImagePullPolicy for the worker pod
-	ImagePullPolicy string `json:"imagePullPolicy,omitempty"`
-
-	// Environment variables for the worker pod
-	Env []EnvVar `json:"env,omitempty"`
-
-	// Resource requests and limits
-	Resources *ResourceRequirements `json:"resources,omitempty"`
+	// Template describes the pod that will be created for this Exchange.
+	// This follows the same structure as Kubernetes Job/Deployment pod templates.
+	// The controller will inject NATS connection info and manage the pod lifecycle.
+	Template corev1.PodTemplateSpec `json:"template"`
 
 	// JetStream stream configuration
 	StreamConfig *StreamConfig `json:"streamConfig,omitempty"`
@@ -134,42 +127,19 @@ type ErrorResponse struct {
 
 // ToExchangeSpec converts CreateExchangeRequest to Exchange spec
 func (r *CreateExchangeRequest) ToExchangeSpec() *conduitv1alpha1.ExchangeSpec {
-	spec := &conduitv1alpha1.ExchangeSpec{}
-
-	if r.Image != "" {
-		spec.Image = r.Image
+	spec := &conduitv1alpha1.ExchangeSpec{
+		Template: r.Template,
 	}
 
-	if r.ImagePullPolicy != "" {
-		spec.ImagePullPolicy = corev1.PullPolicy(r.ImagePullPolicy)
-	}
-
-	if len(r.Env) > 0 {
-		spec.Env = make([]corev1.EnvVar, len(r.Env))
-		for i, env := range r.Env {
-			spec.Env[i] = corev1.EnvVar{
-				Name:  env.Name,
-				Value: env.Value,
-			}
-		}
-	}
-
-	if r.Resources != nil {
-		spec.Resources = corev1.ResourceRequirements{}
-		if r.Resources.Requests != nil {
-			spec.Resources.Requests = corev1.ResourceList{}
-			// Note: Actual resource parsing would use resource.MustParse()
-		}
-		if r.Resources.Limits != nil {
-			spec.Resources.Limits = corev1.ResourceList{}
-		}
-	}
-
+	// Stream configuration
 	if r.StreamConfig != nil {
-		spec.Stream.Subjects.Input = r.StreamConfig.Subjects[0] // simplified
+		if len(r.StreamConfig.Subjects) > 0 {
+			spec.Stream.Subjects.Input = r.StreamConfig.Subjects[0] // simplified
+		}
 		// Note: Full stream config conversion would require more complex mapping
 	}
 
+	// Recovery configuration
 	if r.Recovery != nil {
 		spec.Recovery = conduitv1alpha1.RecoveryConfig{
 			MaxRestarts: r.Recovery.MaxRestarts,

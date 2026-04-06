@@ -1,0 +1,247 @@
+apiVersion: conduit.mnke.org/v1alpha1
+kind: Exchange
+metadata:
+  name: advanced-exchange
+  labels:
+    app.kubernetes.io/name: conduit
+    app.kubernetes.io/managed-by: kustomize
+    environment: production
+spec:
+  # Pod template with advanced configuration
+  template:
+    metadata:
+      labels:
+        app: advanced-exchange
+        environment: production
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+    spec:
+      # Service account
+      serviceAccountName: exchange-workload
+
+      # Init containers
+      initContainers:
+        - name: init-db
+          image: postgres:15
+          command: ['sh', '-c', 'until pg_isready -h db; do echo waiting for db; sleep 2; done']
+        - name: init-cache
+          image: busybox:1.28
+          command: ['sh', '-c', 'mkdir -p /cache/tmp && chmod 777 /cache/tmp']
+          volumeMounts:
+            - name: cache
+              mountPath: /cache
+
+      # Main container
+      containers:
+        - name: exchange
+          image: "conduit/examples/echo:go"
+          imagePullPolicy: Always
+          command: ["/app/exchange"]
+          args:
+            - "--mode=production"
+            - "--verbose"
+            - "--max-connections=100"
+          workingDir: /app
+
+          # Resource requirements
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "1000m"
+            limits:
+              memory: "2Gi"
+              cpu: "2000m"
+
+          # Environment variables
+          env:
+            - name: APP_ENV
+              value: "production"
+            - name: LOG_LEVEL
+              value: "debug"
+            - name: DATABASE_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: db-credentials
+                  key: host
+
+          # Environment from ConfigMaps and Secrets
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: app-secrets
+
+          # Volume mounts
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: cache
+              mountPath: /cache
+
+          # Container security context
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - NET_BIND_SERVICE
+            readOnlyRootFilesystem: true
+
+          # Container lifecycle hooks
+          lifecycle:
+            postStart:
+              exec:
+                command: ["/bin/sh", "-c", "echo 'Container started' > /data/started.log"]
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "echo 'Gracefully shutting down' && sleep 10"]
+
+          # Health probes
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+              scheme: HTTP
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            successThreshold: 1
+            failureThreshold: 3
+
+          startupProbe:
+            httpGet:
+              path: /startup
+              port: 8080
+              scheme: HTTP
+            initialDelaySeconds: 0
+            periodSeconds: 10
+            timeoutSeconds: 3
+            successThreshold: 1
+            failureThreshold: 30
+
+      # Volumes
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: exchange-data
+        - name: config
+          configMap:
+            name: app-config
+        - name: cache
+          emptyDir:
+            sizeLimit: 1Gi
+
+      # Pod security context
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 3000
+        fsGroup: 2000
+        seccompProfile:
+          type: RuntimeDefault
+
+      # Node selection
+      nodeSelector:
+        kubernetes.io/os: linux
+        node.kubernetes.io/instance-type: m5.xlarge
+        workload-type: compute-intensive
+
+      # Affinity rules
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: topology.kubernetes.io/zone
+                    operator: In
+                    values:
+                      - us-east-1a
+                      - us-east-1b
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: node.kubernetes.io/instance-type
+                    operator: In
+                    values:
+                      - m5.2xlarge
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/name
+                      operator: In
+                      values:
+                        - conduit
+                topologyKey: kubernetes.io/hostname
+
+      # Tolerations
+      tolerations:
+        - key: "high-priority"
+          operator: "Equal"
+          value: "true"
+          effect: "NoSchedule"
+        - key: "node.kubernetes.io/not-ready"
+          operator: "Exists"
+          effect: "NoExecute"
+          tolerationSeconds: 300
+
+      # Priority
+      priorityClassName: high-priority
+      priority: 1000
+
+      # DNS configuration
+      dnsPolicy: ClusterFirst
+      dnsConfig:
+        nameservers:
+          - 1.1.1.1
+          - 8.8.8.8
+        searches:
+          - exchange.svc.cluster.local
+          - svc.cluster.local
+          - cluster.local
+        options:
+          - name: ndots
+            value: "2"
+          - name: edns0
+
+      # Graceful shutdown
+      terminationGracePeriodSeconds: 60
+      activeDeadlineSeconds: 7200
+
+      # Runtime class for enhanced isolation
+      runtimeClassName: kata-containers
+
+  # NATS stream configuration
+  stream:
+    retention:
+      maxAge: "336h"  # 14 days
+      maxMessages: 500000
+      maxBytes: "10Gi"
+    subjects:
+      input: "exchange.advanced.input"
+      output: "exchange.advanced.output"
+      control: "exchange.advanced.control"
+
+  # Recovery configuration
+  recovery:
+    maxRestarts: 10
+    backoffLimit: 5

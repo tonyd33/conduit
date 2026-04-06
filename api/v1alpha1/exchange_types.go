@@ -27,26 +27,12 @@ import (
 
 // ExchangeSpec defines the desired state of Exchange.
 type ExchangeSpec struct {
-	// Image is the container image for the workload
-	// +kubebuilder:validation:Required
-	Image string `json:"image"`
-
-	// ImagePullPolicy describes when to pull the image
-	// +kubebuilder:validation:Enum=Always;Never;IfNotPresent
-	// +kubebuilder:default=IfNotPresent
-	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
-
-	// ImagePullSecrets is a list of references to secrets for pulling images
-	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
-
-	// Resources defines the compute resource requirements
-	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
-
-	// Env is a list of environment variables to set in the container
-	Env []corev1.EnvVar `json:"env,omitempty"`
-
-	// ServiceAccountName is the name of the ServiceAccount to use for the pod
-	ServiceAccountName string `json:"serviceAccountName,omitempty"`
+	// Template describes the pod that will be created for this Exchange.
+	// The template will be modified by the controller to inject NATS connection
+	// information and other Exchange-specific configuration.
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:XPreserveUnknownFields
+	Template corev1.PodTemplateSpec `json:"template"`
 
 	// Stream defines the NATS JetStream configuration for this Exchange
 	Stream StreamConfig `json:"stream,omitempty"`

@@ -43,11 +43,6 @@ func (r *Exchange) SetupWebhookWithManager(mgr ctrl.Manager) error {
 func (r *Exchange) Default() {
 	exchangelog.Info("default", "name", r.Name)
 
-	// Set default image pull policy
-	if r.Spec.ImagePullPolicy == "" {
-		r.Spec.ImagePullPolicy = "IfNotPresent"
-	}
-
 	// Set default retention config
 	if r.Spec.Stream.Retention.MaxAge.Duration == 0 {
 		r.Spec.Stream.Retention.MaxAge.Duration = 168 * 3600 * 1000000000 // 168 hours
@@ -122,9 +117,12 @@ func (r *Exchange) validateExchangeSpec() field.ErrorList {
 	var allErrs field.ErrorList
 	specPath := field.NewPath("spec")
 
-	// Validate image is not empty
-	if r.Spec.Image == "" {
-		allErrs = append(allErrs, field.Required(specPath.Child("image"), "image must be specified"))
+	// Validate that at least one container is specified in the template
+	if len(r.Spec.Template.Spec.Containers) == 0 {
+		allErrs = append(allErrs, field.Required(
+			specPath.Child("template", "spec", "containers"),
+			"at least one container must be specified",
+		))
 	}
 
 	// Validate retention config
@@ -142,7 +140,7 @@ func (r *Exchange) validateExchangeSpec() field.ErrorList {
 		allErrs = append(allErrs, err...)
 	}
 
-	// Validate environment variables
+	// Validate environment variables in all containers
 	if err := r.validateEnvVars(); err != nil {
 		allErrs = append(allErrs, err...)
 	}
@@ -317,7 +315,6 @@ func (r *Exchange) validateRecoveryConfig() field.ErrorList {
 // validateEnvVars validates environment variables
 func (r *Exchange) validateEnvVars() field.ErrorList {
 	var allErrs field.ErrorList
-	envPath := field.NewPath("spec", "env")
 
 	// Reserved environment variable prefixes that the operator uses
 	reservedPrefixes := []string{
@@ -326,13 +323,18 @@ func (r *Exchange) validateEnvVars() field.ErrorList {
 		"CONDUIT_",
 	}
 
-	for i, env := range r.Spec.Env {
-		for _, prefix := range reservedPrefixes {
-			if strings.HasPrefix(env.Name, prefix) {
-				allErrs = append(allErrs, field.Forbidden(
-					envPath.Index(i).Child("name"),
-					fmt.Sprintf("environment variable name cannot start with reserved prefix '%s'", prefix),
-				))
+	// Check environment variables in all containers
+	containersPath := field.NewPath("spec", "template", "spec", "containers")
+	for containerIdx, container := range r.Spec.Template.Spec.Containers {
+		envPath := containersPath.Index(containerIdx).Child("env")
+		for i, env := range container.Env {
+			for _, prefix := range reservedPrefixes {
+				if strings.HasPrefix(env.Name, prefix) {
+					allErrs = append(allErrs, field.Forbidden(
+						envPath.Index(i).Child("name"),
+						fmt.Sprintf("environment variable name cannot start with reserved prefix '%s'", prefix),
+					))
+				}
 			}
 		}
 	}

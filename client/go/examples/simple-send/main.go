@@ -12,23 +12,28 @@ import (
 
 func main() {
 	// Configuration from environment variables
-	apiURL := getEnv("API_URL", "http://localhost:8090")
 	workerImage := getEnv("WORKER_IMAGE", "conduit/examples/echo:go")
 	exchangeName := getEnv("EXCHANGE_NAME", "simple-send-go")
+	namespace := getEnv("NAMESPACE", "default")
+	natsURL := getEnv("NATS_URL", "nats://conduit-nats.conduit-system.svc.cluster.local:4222")
 
 	fmt.Println("Conduit Simple Send Example (Go)")
 	fmt.Println("=================================")
-	fmt.Printf("API Server: %s\n", apiURL)
+	fmt.Printf("Namespace: %s\n", namespace)
+	fmt.Printf("NATS URL: %s\n", natsURL)
 	fmt.Printf("Worker Image: %s\n", workerImage)
 	fmt.Printf("Exchange Name: %s\n\n", exchangeName)
 
-	conduit := conduitclient.NewConduit(apiURL, "")
+	conduit, err := conduitclient.NewConduit(natsURL, namespace)
+	if err != nil {
+		log.Fatalf("Failed to create Conduit client: %v", err)
+	}
 
-	// Create Exchange via API
+	// Create Exchange via Kubernetes API
 	fmt.Println("Creating Exchange...")
 	exchange, err := conduit.CreateExchangeClient(conduitclient.ExchangeRequest{
 		Name:      exchangeName,
-		Namespace: "default",
+		Namespace: namespace,
 		Image:     workerImage,
 	})
 	if err != nil {

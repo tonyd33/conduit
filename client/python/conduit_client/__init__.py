@@ -8,7 +8,14 @@ Conduit Exchange workers.
 from .conduit import Conduit
 from .exchange import ExchangeClient, ResponseHandler
 from .message import Message, MessageType, new_message, new_data_message
-from .types import ExchangeRequest, ExchangeResource, ConnectionInfo
+from .types import (
+    ExchangeRequest,
+    ExchangeResource,
+    ConnectionInfo,
+    EnvVar,
+    VolumeMount,
+    Volume,
+)
 
 __all__ = [
     "Conduit",
@@ -17,6 +24,9 @@ __all__ = [
     "ExchangeRequest",
     "ExchangeResource",
     "ConnectionInfo",
+    "EnvVar",
+    "VolumeMount",
+    "Volume",
     "Message",
     "MessageType",
     "new_message",

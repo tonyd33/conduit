@@ -1,15 +1,18 @@
 package conduitclient
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"time"
 
 	"github.com/nats-io/nats.go"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 // ResponseHandler is a function that processes responses from an Exchange
@@ -27,11 +30,12 @@ type ExchangeClient struct {
 	Namespace string
 }
 
-// Conduit manages Exchange lifecycle via the API
+// Conduit manages Exchange lifecycle via Kubernetes API
 type Conduit struct {
-	apiBaseURL string
-	apiKey     string
-	httpClient *http.Client
+	k8sClient     kubernetes.Interface
+	dynamicClient dynamic.Interface
+	namespace     string
+	natsURL       string
 }
 
 // EnvVar represents an environment variable
@@ -40,12 +44,30 @@ type EnvVar struct {
 	Value string `json:"value"`
 }
 
-// ExchangeRequest represents a request to create an Exchange via API
+// VolumeMount represents a volume mount configuration
+type VolumeMount struct {
+	Name      string `json:"name"`
+	MountPath string `json:"mountPath"`
+	ReadOnly  *bool  `json:"readOnly,omitempty"`
+}
+
+// Volume represents a volume that can be mounted by containers
+type Volume struct {
+	Name                  string                               `json:"name"`
+	EmptyDir              map[string]interface{}               `json:"emptyDir,omitempty"`
+	ConfigMap             *corev1.ConfigMapVolumeSource        `json:"configMap,omitempty"`
+	Secret                *corev1.SecretVolumeSource           `json:"secret,omitempty"`
+	PersistentVolumeClaim *corev1.PersistentVolumeClaimVolumeSource `json:"persistentVolumeClaim,omitempty"`
+}
+
+// ExchangeRequest represents a request to create an Exchange via Kubernetes API
 type ExchangeRequest struct {
-	Name      string   `json:"name"`
-	Namespace string   `json:"namespace,omitempty"`
-	Image     string   `json:"image,omitempty"`
-	Env       []EnvVar `json:"env,omitempty"`
+	Name         string        `json:"name"`
+	Namespace    string        `json:"namespace,omitempty"`
+	Image        string        `json:"image"`
+	Env          []EnvVar      `json:"env,omitempty"`
+	VolumeMounts []VolumeMount `json:"volumeMounts,omitempty"`
+	Volumes      []Volume      `json:"volumes,omitempty"`
 }
 
 // ExchangeResource represents an Exchange from the API
@@ -66,25 +88,57 @@ type ConnectionInfo struct {
 	OutputSubject string `json:"outputSubject"`
 }
 
-// NewConduit creates a new Conduit API client
-func NewConduit(apiBaseURL string, apiKey string) *Conduit {
-	return &Conduit{
-		apiBaseURL: apiBaseURL,
-		apiKey:     apiKey,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+// NewConduit creates a new Conduit Kubernetes client
+func NewConduit(natsURL, namespace string) (*Conduit, error) {
+	// Load kubeconfig
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	configOverrides := &clientcmd.ConfigOverrides{}
+	kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
+
+	config, err := kubeConfig.ClientConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load kubeconfig: %w", err)
 	}
+
+	// Create Kubernetes client
+	k8sClient, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Kubernetes client: %w", err)
+	}
+
+	// Create dynamic client for custom resources
+	dynamicClient, err := dynamic.NewForConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create dynamic client: %w", err)
+	}
+
+	if namespace == "" {
+		namespace = "default"
+	}
+
+	return &Conduit{
+		k8sClient:     k8sClient,
+		dynamicClient: dynamicClient,
+		namespace:     namespace,
+		natsURL:       natsURL,
+	}, nil
 }
 
-// CreateExchangeClient creates a new Exchange via the API and returns a connected client
+// CreateExchangeClient creates a new Exchange via Kubernetes API and returns a connected client
 func (c *Conduit) CreateExchangeClient(req ExchangeRequest) (*ExchangeClient, error) {
 	// Create the Exchange
-	resource, err := c.createExchange(req)
+	err := c.createExchange(req)
 	if err != nil {
 		return nil, err
 	}
 
+	namespace := req.Namespace
+	if namespace == "" {
+		namespace = c.namespace
+	}
+
 	// Wait for it to be ready
-	resource, err = c.waitForExchangeReady(resource.Name, resource.Namespace, 60*time.Second)
+	resource, err := c.waitForExchangeReady(req.Name, namespace, 60*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +169,7 @@ func (c *Conduit) CreateExchangeClient(req ExchangeRequest) (*ExchangeClient, er
 	}, nil
 }
 
-// DeleteExchangeClient deletes an Exchange via the API
+// DeleteExchangeClient deletes an Exchange via Kubernetes API
 func (c *Conduit) DeleteExchangeClient(exchange *ExchangeClient) error {
 	return c.deleteExchange(exchange.Name, exchange.Namespace)
 }
@@ -255,72 +309,167 @@ func (c *ExchangeClient) Close() error {
 	return nil
 }
 
-// Private API helper methods for Conduit
+// Private Kubernetes API helper methods for Conduit
 
-func (c *Conduit) createExchange(req ExchangeRequest) (*ExchangeResource, error) {
-	body, err := json.Marshal(req)
+func (c *Conduit) createExchange(req ExchangeRequest) error {
+	namespace := req.Namespace
+	if namespace == "" {
+		namespace = c.namespace
+	}
+
+	// Build the container spec
+	container := map[string]interface{}{
+		"name":  "exchange",
+		"image": req.Image,
+	}
+
+	if len(req.Env) > 0 {
+		envVars := make([]map[string]interface{}, len(req.Env))
+		for i, e := range req.Env {
+			envVars[i] = map[string]interface{}{
+				"name":  e.Name,
+				"value": e.Value,
+			}
+		}
+		container["env"] = envVars
+	}
+
+	if len(req.VolumeMounts) > 0 {
+		volumeMounts := make([]map[string]interface{}, len(req.VolumeMounts))
+		for i, vm := range req.VolumeMounts {
+			mount := map[string]interface{}{
+				"name":      vm.Name,
+				"mountPath": vm.MountPath,
+			}
+			if vm.ReadOnly != nil {
+				mount["readOnly"] = *vm.ReadOnly
+			}
+			volumeMounts[i] = mount
+		}
+		container["volumeMounts"] = volumeMounts
+	}
+
+	// Build the pod spec
+	podSpec := map[string]interface{}{
+		"containers": []interface{}{container},
+	}
+
+	if len(req.Volumes) > 0 {
+		volumes := make([]map[string]interface{}, len(req.Volumes))
+		for i, vol := range req.Volumes {
+			volume := map[string]interface{}{
+				"name": vol.Name,
+			}
+			if vol.EmptyDir != nil {
+				volume["emptyDir"] = vol.EmptyDir
+			} else if vol.ConfigMap != nil {
+				volume["configMap"] = vol.ConfigMap
+			} else if vol.Secret != nil {
+				volume["secret"] = vol.Secret
+			} else if vol.PersistentVolumeClaim != nil {
+				volume["persistentVolumeClaim"] = vol.PersistentVolumeClaim
+			}
+			volumes[i] = volume
+		}
+		podSpec["volumes"] = volumes
+	}
+
+	// Build the Exchange CR
+	exchangeCR := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "conduit.mnke.org/v1alpha1",
+			"kind":       "Exchange",
+			"metadata": map[string]interface{}{
+				"name":      req.Name,
+				"namespace": namespace,
+			},
+			"spec": map[string]interface{}{
+				"template": map[string]interface{}{
+					"spec": podSpec,
+				},
+			},
+		},
+	}
+
+	// Define the GVR for Exchange CRD
+	gvr := schema.GroupVersionResource{
+		Group:    "conduit.mnke.org",
+		Version:  "v1alpha1",
+		Resource: "exchanges",
+	}
+
+	// Create the Exchange CR
+	_, err := c.dynamicClient.Resource(gvr).Namespace(namespace).Create(
+		context.Background(),
+		exchangeCR,
+		metav1.CreateOptions{},
+	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return fmt.Errorf("failed to create Exchange: %w", err)
 	}
 
-	httpReq, err := http.NewRequest("POST", c.apiBaseURL+"/api/v1/exchanges", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
-	if c.apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
-	}
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
-	}
-
-	var resource ExchangeResource
-	if err := json.NewDecoder(resp.Body).Decode(&resource); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	return &resource, nil
+	return nil
 }
 
 func (c *Conduit) getExchange(name, namespace string) (*ExchangeResource, error) {
-	url := fmt.Sprintf("%s/api/v1/exchanges/%s/%s", c.apiBaseURL, namespace, name)
+	// Define the GVR for Exchange CRD
+	gvr := schema.GroupVersionResource{
+		Group:    "conduit.mnke.org",
+		Version:  "v1alpha1",
+		Resource: "exchanges",
+	}
 
-	httpReq, err := http.NewRequest("GET", url, nil)
+	// Get the Exchange CR
+	exchangeUnstructured, err := c.dynamicClient.Resource(gvr).Namespace(namespace).Get(
+		context.Background(),
+		name,
+		metav1.GetOptions{},
+	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to get Exchange: %w", err)
 	}
 
-	if c.apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	// Extract fields from unstructured data
+	exchange := exchangeUnstructured.Object
+
+	metadata, _ := exchange["metadata"].(map[string]interface{})
+	spec, _ := exchange["spec"].(map[string]interface{})
+	status, _ := exchange["status"].(map[string]interface{})
+
+	uid, _ := metadata["uid"].(string)
+	phase, _ := status["phase"].(string)
+	message, _ := status["message"].(string)
+	streamName, _ := status["streamName"].(string)
+
+	// Get subjects from spec or generate defaults
+	var inputSubject, outputSubject string
+	if streamSpec, ok := spec["stream"].(map[string]interface{}); ok {
+		if subjects, ok := streamSpec["subjects"].(map[string]interface{}); ok {
+			inputSubject, _ = subjects["input"].(string)
+			outputSubject, _ = subjects["output"].(string)
+		}
 	}
 
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
+	if inputSubject == "" {
+		inputSubject = fmt.Sprintf("exchange.%s.input", uid)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+	if outputSubject == "" {
+		outputSubject = fmt.Sprintf("exchange.%s.output", uid)
 	}
 
-	var resource ExchangeResource
-	if err := json.NewDecoder(resp.Body).Decode(&resource); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	return &resource, nil
+	return &ExchangeResource{
+		Name:      name,
+		Namespace: namespace,
+		UID:       uid,
+		Phase:     phase,
+		Message:   message,
+		ConnectionInfo: ConnectionInfo{
+			NATSURL:       c.natsURL,
+			StreamName:    streamName,
+			InputSubject:  inputSubject,
+			OutputSubject: outputSubject,
+		},
+	}, nil
 }
 
 func (c *Conduit) waitForExchangeReady(name, namespace string, timeout time.Duration) (*ExchangeResource, error) {
@@ -343,26 +492,21 @@ func (c *Conduit) waitForExchangeReady(name, namespace string, timeout time.Dura
 }
 
 func (c *Conduit) deleteExchange(name, namespace string) error {
-	url := fmt.Sprintf("%s/api/v1/exchanges/%s/%s", c.apiBaseURL, namespace, name)
+	// Define the GVR for Exchange CRD
+	gvr := schema.GroupVersionResource{
+		Group:    "conduit.mnke.org",
+		Version:  "v1alpha1",
+		Resource: "exchanges",
+	}
 
-	httpReq, err := http.NewRequest("DELETE", url, nil)
+	// Delete the Exchange CR
+	err := c.dynamicClient.Resource(gvr).Namespace(namespace).Delete(
+		context.Background(),
+		name,
+		metav1.DeleteOptions{},
+	)
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	if c.apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
-	}
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusNoContent {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+		return fmt.Errorf("failed to delete Exchange: %w", err)
 	}
 
 	return nil

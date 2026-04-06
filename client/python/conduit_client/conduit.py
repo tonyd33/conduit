@@ -1,11 +1,10 @@
-"""Conduit class for managing Exchange lifecycle via the API."""
+"""Conduit class for managing Exchange lifecycle via Kubernetes API."""
 
 import asyncio
 from typing import Optional
 
-import aiohttp
 import nats
-from nats.js import JetStreamContext
+from kubernetes import client, config
 
 from .exchange import ExchangeClient
 from .types import ExchangeRequest, ExchangeResource
@@ -13,14 +12,17 @@ from .types import ExchangeRequest, ExchangeResource
 
 class Conduit:
     """
-    Conduit manages Exchange lifecycle via the API.
+    Conduit manages Exchange lifecycle via Kubernetes API.
 
     This class handles creating, waiting for readiness, and deleting Exchanges
-    via the Conduit API server.
+    by directly interacting with Kubernetes to create Exchange CRs.
 
     Example:
         ```python
-        conduit = Conduit(api_base_url="http://localhost:8090")
+        conduit = Conduit(
+            namespace="default",
+            nats_url="nats://conduit-nats.conduit-system.svc.cluster.local:4222"
+        )
 
         # Create Exchange and get connected client
         exchange = await conduit.create_exchange_client(
@@ -40,20 +42,22 @@ class Conduit:
         ```
     """
 
-    def __init__(self, api_base_url: str, api_key: Optional[str] = None):
+    def __init__(self, nats_url: str, namespace: str = "default"):
         """
-        Initialize Conduit API client.
+        Initialize Conduit Kubernetes client.
 
         Args:
-            api_base_url: Conduit API server URL (e.g., "http://localhost:8090")
-            api_key: Optional API key for authentication
+            nats_url: NATS server URL (e.g., "nats://conduit-nats.conduit-system.svc.cluster.local:4222")
+            namespace: Default Kubernetes namespace for Exchanges
         """
-        self.api_base_url = api_base_url
-        self.api_key = api_key
+        config.load_kube_config()
+        self.k8s_api = client.CustomObjectsApi()
+        self.namespace = namespace
+        self.nats_url = nats_url
 
     async def create_exchange_client(self, req: ExchangeRequest) -> ExchangeClient:
         """
-        Create a new Exchange via the API and return a connected client.
+        Create a new Exchange via Kubernetes API and return a connected client.
 
         This is the easiest way to get started with Conduit.
 
@@ -65,26 +69,28 @@ class Conduit:
 
         Example:
             ```python
+            from conduit_client.types import EnvVar, VolumeMount, Volume
+
             exchange = await conduit.create_exchange_client(
                 ExchangeRequest(
                     name="my-exchange",
                     namespace="default",
                     image="worker:latest",
-                    env={"KEY": "value"},
+                    env=[EnvVar(name="KEY", value="value")],
+                    volume_mounts=[VolumeMount(name="data", mount_path="/data")],
+                    volumes=[Volume(name="data", empty_dir={})],
                 )
             )
             ```
         """
-        async with aiohttp.ClientSession() as session:
-            # Create the Exchange
-            resource = await self._create_exchange(session, req)
+        # Create the Exchange CR
+        await asyncio.to_thread(self._create_exchange, req)
 
-            # Wait for it to be ready
-            resource = await self._wait_for_exchange_ready(
-                session,
-                resource["name"],
-                resource["namespace"],
-            )
+        # Wait for it to be ready
+        resource = await self._wait_for_exchange_ready(
+            req.name,
+            req.namespace or self.namespace,
+        )
 
         # Connect to NATS
         nc = await nats.connect(
@@ -107,7 +113,7 @@ class Conduit:
 
     async def delete_exchange_client(self, exchange: ExchangeClient) -> None:
         """
-        Delete an Exchange via the API.
+        Delete an Exchange via Kubernetes API.
 
         Args:
             exchange: The ExchangeClient instance to delete
@@ -117,56 +123,120 @@ class Conduit:
             await conduit.delete_exchange_client(exchange)
             ```
         """
-        await self._delete_exchange(exchange.name, exchange.namespace)
+        await asyncio.to_thread(self._delete_exchange, exchange.name, exchange.namespace)
 
-    async def _create_exchange(
-        self,
-        session: aiohttp.ClientSession,
-        req: ExchangeRequest,
-    ) -> dict:
-        """Create an Exchange via the API (private)."""
-        url = f"{self.api_base_url}/api/v1/exchanges"
+    def _create_exchange(self, req: ExchangeRequest) -> None:
+        """Create an Exchange CR via Kubernetes API (private)."""
+        namespace = req.namespace or self.namespace
 
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-
-        body = {
-            "name": req.name,
-            "namespace": req.namespace,
+        # Build the container spec
+        container = {
+            "name": "exchange",
             "image": req.image,
         }
+
         if req.env:
-            body["env"] = req.env
+            container["env"] = [
+                {"name": e.name, "value": e.value} for e in req.env
+            ]
 
-        async with session.post(url, json=body, headers=headers) as resp:
-            if resp.status != 201:
-                text = await resp.text()
-                raise Exception(f"Failed to create Exchange (status {resp.status}): {text}")
-            return await resp.json()
+        if req.volume_mounts:
+            container["volumeMounts"] = [
+                {
+                    "name": vm.name,
+                    "mountPath": vm.mount_path,
+                    **({"readOnly": vm.read_only} if vm.read_only is not None else {}),
+                }
+                for vm in req.volume_mounts
+            ]
 
-    async def _get_exchange(
-        self,
-        session: aiohttp.ClientSession,
-        name: str,
-        namespace: str,
-    ) -> dict:
-        """Get Exchange information from the API (private)."""
-        url = f"{self.api_base_url}/api/v1/exchanges/{namespace}/{name}"
+        # Build the pod spec
+        pod_spec = {"containers": [container]}
 
-        headers = {}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+        if req.volumes:
+            pod_spec["volumes"] = []
+            for vol in req.volumes:
+                volume_dict = {"name": vol.name}
+                if vol.empty_dir is not None:
+                    volume_dict["emptyDir"] = vol.empty_dir
+                elif vol.config_map is not None:
+                    volume_dict["configMap"] = vol.config_map
+                elif vol.secret is not None:
+                    volume_dict["secret"] = vol.secret
+                elif vol.persistent_volume_claim is not None:
+                    volume_dict["persistentVolumeClaim"] = vol.persistent_volume_claim
+                pod_spec["volumes"].append(volume_dict)
 
-        async with session.get(url, headers=headers) as resp:
-            if resp.status != 200:
-                text = await resp.text()
-                raise Exception(f"Failed to get Exchange (status {resp.status}): {text}")
-            return await resp.json()
+        # Build the Exchange CR
+        exchange_cr = {
+            "apiVersion": "conduit.mnke.org/v1alpha1",
+            "kind": "Exchange",
+            "metadata": {
+                "name": req.name,
+                "namespace": namespace,
+            },
+            "spec": {
+                "template": {
+                    "spec": pod_spec,
+                },
+            },
+        }
+
+        try:
+            self.k8s_api.create_namespaced_custom_object(
+                group="conduit.mnke.org",
+                version="v1alpha1",
+                namespace=namespace,
+                plural="exchanges",
+                body=exchange_cr,
+            )
+        except Exception as e:
+            raise Exception(f"Failed to create Exchange: {str(e)}")
+
+    def _get_exchange(self, name: str, namespace: str) -> dict:
+        """Get Exchange CR from Kubernetes API (private)."""
+        try:
+            exchange = self.k8s_api.get_namespaced_custom_object(
+                group="conduit.mnke.org",
+                version="v1alpha1",
+                namespace=namespace,
+                plural="exchanges",
+                name=name,
+            )
+
+            # Extract connection info from Exchange status
+            uid = exchange.get("metadata", {}).get("uid", "")
+            spec = exchange.get("spec", {})
+            status = exchange.get("status", {})
+
+            input_subject = spec.get("stream", {}).get("subjects", {}).get("input")
+            if not input_subject:
+                input_subject = f"exchange.{uid}.input"
+
+            output_subject = spec.get("stream", {}).get("subjects", {}).get("output")
+            if not output_subject:
+                output_subject = f"exchange.{uid}.output"
+
+            connection_info = {
+                "natsURL": self.nats_url,
+                "streamName": status.get("streamName", ""),
+                "inputSubject": input_subject,
+                "outputSubject": output_subject,
+            }
+
+            return {
+                "name": exchange.get("metadata", {}).get("name"),
+                "namespace": exchange.get("metadata", {}).get("namespace"),
+                "uid": uid,
+                "phase": status.get("phase", "Pending"),
+                "message": status.get("message"),
+                "connectionInfo": connection_info,
+            }
+        except Exception as e:
+            raise Exception(f"Failed to get Exchange: {str(e)}")
 
     async def _wait_for_exchange_ready(
         self,
-        session: aiohttp.ClientSession,
         name: str,
         namespace: str,
         timeout: float = 60.0,
@@ -176,7 +246,7 @@ class Conduit:
 
         start = time.time()
         while time.time() - start < timeout:
-            resource = await self._get_exchange(session, name, namespace)
+            resource = await asyncio.to_thread(self._get_exchange, name, namespace)
 
             if resource.get("phase") == "Running":
                 return resource
@@ -185,16 +255,15 @@ class Conduit:
 
         raise TimeoutError(f"Exchange {namespace}/{name} did not become ready within {timeout}s")
 
-    async def _delete_exchange(self, name: str, namespace: str) -> None:
-        """Delete an Exchange via the API (private)."""
-        url = f"{self.api_base_url}/api/v1/exchanges/{namespace}/{name}"
-
-        headers = {}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-
-        async with aiohttp.ClientSession() as session:
-            async with session.delete(url, headers=headers) as resp:
-                if resp.status != 204:
-                    text = await resp.text()
-                    raise Exception(f"API error (status {resp.status}): {text}")
+    def _delete_exchange(self, name: str, namespace: str) -> None:
+        """Delete an Exchange CR via Kubernetes API (private)."""
+        try:
+            self.k8s_api.delete_namespaced_custom_object(
+                group="conduit.mnke.org",
+                version="v1alpha1",
+                namespace=namespace,
+                plural="exchanges",
+                name=name,
+            )
+        except Exception as e:
+            raise Exception(f"Failed to delete Exchange: {str(e)}")

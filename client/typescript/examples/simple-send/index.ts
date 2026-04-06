@@ -2,7 +2,7 @@
  * Simple example of creating an Exchange and sending messages using the Conduit TypeScript client.
  *
  * This demonstrates:
- * 1. Creating an Exchange via the Conduit API
+ * 1. Creating an Exchange via Kubernetes API
  * 2. Sending messages to the Exchange
  * 3. Subscribing to responses
  * 4. Cleaning up resources
@@ -12,23 +12,25 @@ import { Conduit } from '@mnke/conduit-client';
 
 async function main() {
   // Configuration from environment variables
-  const apiUrl = process.env.API_URL || 'http://localhost:8090';
   const workerImage = process.env.WORKER_IMAGE || 'conduit/examples/echo:go';
   const exchangeName = process.env.EXCHANGE_NAME || 'simple-send-ts';
+  const namespace = process.env.NAMESPACE || 'default';
+  const natsURL = process.env.NATS_URL || 'nats://conduit-nats.conduit-system.svc.cluster.local:4222';
 
   console.log('Conduit Simple Send Example (TypeScript)');
   console.log('========================================');
-  console.log(`API Server: ${apiUrl}`);
+  console.log(`Namespace: ${namespace}`);
+  console.log(`NATS URL: ${natsURL}`);
   console.log(`Worker Image: ${workerImage}`);
   console.log(`Exchange Name: ${exchangeName}\n`);
 
-  const conduit = new Conduit({ apiBaseUrl: apiUrl });
+  const conduit = new Conduit({ namespace, natsURL });
 
-  // Create Exchange via API
+  // Create Exchange via Kubernetes API
   console.log('Creating Exchange...');
   const exchange = await conduit.createExchangeClient({
     name: exchangeName,
-    namespace: 'default',
+    namespace: namespace,
     image: workerImage,
   });
   console.log('Exchange created and ready!\n');

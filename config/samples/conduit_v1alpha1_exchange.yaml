@@ -12,27 +12,44 @@ metadata:
     archival.conduit.mnke.org/format: "jsonl"
     archival.conduit.mnke.org/on-completion: "true"
 spec:
-  # Container image for the workload
-  # This can be any application that communicates via NATS JetStream
-  # Examples: AI agents, data processors, workflow engines, etc.
-  image: "conduit/examples/echo:go"
-  imagePullPolicy: IfNotPresent
+  # Pod template - follows the same structure as Kubernetes Job, Deployment, etc.
+  # The controller will inject NATS connection info and manage the pod lifecycle
+  template:
+    metadata:
+      labels:
+        app: example-exchange
+    spec:
+      containers:
+        - name: exchange
+          image: "conduit/examples/echo:go"
+          imagePullPolicy: IfNotPresent
 
-  # Resource requirements
-  resources:
-    requests:
-      memory: "512Mi"
-      cpu: "500m"
-    limits:
-      memory: "1Gi"
-      cpu: "1000m"
+          # Resource requirements
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "500m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
 
-  # Environment variables for your application
-  env:
-    - name: APP_CONFIG
-      value: "production"
-    - name: LOG_LEVEL
-      value: "info"
+          # Environment variables for your application
+          env:
+            - name: APP_CONFIG
+              value: "production"
+            - name: LOG_LEVEL
+              value: "info"
+
+      # All standard Kubernetes pod configuration is supported:
+      # - volumes and volumeMounts
+      # - initContainers
+      # - securityContext
+      # - nodeSelector, affinity, tolerations
+      # - serviceAccountName
+      # - dnsPolicy, dnsConfig
+      # - hostNetwork, hostPID, hostIPC
+      # - terminationGracePeriodSeconds
+      # - and more...
 
   # NATS stream configuration
   stream:
@@ -45,4 +62,3 @@ spec:
   recovery:
     maxRestarts: 5
     backoffLimit: 3
-    checkpointInterval: "5m"

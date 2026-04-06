@@ -29,8 +29,8 @@ func NewCollector(k8sClient client.Client, natsClient *natsclient.Client, interv
 // Start begins collecting metrics in the background
 // This implements the controller-runtime Runnable interface
 func (c *Collector) Start(ctx context.Context) error {
-	log := log.FromContext(ctx).WithName("metrics-collector")
-	log.Info("Starting metrics collector", "interval", c.interval)
+	logger := log.FromContext(ctx).WithName("metrics-collector")
+	logger.Info("Starting metrics collector", "interval", c.interval)
 
 	ticker := time.NewTicker(c.interval)
 	defer ticker.Stop()
@@ -41,7 +41,7 @@ func (c *Collector) Start(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			log.Info("Stopping metrics collector")
+			logger.Info("Stopping metrics collector")
 			return nil // Return nil on graceful shutdown
 		case <-ticker.C:
 			c.collect(ctx)
@@ -56,7 +56,7 @@ func (c *Collector) NeedLeaderElection() bool {
 
 // collect gathers metrics from Kubernetes and NATS
 func (c *Collector) collect(ctx context.Context) {
-	log := log.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
 	// Collect Exchange lifecycle metrics
 	c.collectExchangeMetrics(ctx)
@@ -65,18 +65,18 @@ func (c *Collector) collect(ctx context.Context) {
 	if c.natsClient != nil {
 		c.collectNATSMetrics(ctx)
 	} else {
-		log.V(1).Info("Skipping NATS metrics collection (NATS client not available)")
+		logger.V(1).Info("Skipping NATS metrics collection (NATS client not available)")
 	}
 }
 
 // collectExchangeMetrics collects metrics about Exchange resources
 func (c *Collector) collectExchangeMetrics(ctx context.Context) {
-	log := log.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
 	// List all Exchanges
 	exchangeList := &conduitv1alpha1.ExchangeList{}
 	if err := c.client.List(ctx, exchangeList); err != nil {
-		log.Error(err, "Failed to list Exchanges for metrics")
+		logger.Error(err, "Failed to list Exchanges for metrics")
 		return
 	}
 
@@ -107,12 +107,12 @@ func (c *Collector) collectExchangeMetrics(ctx context.Context) {
 
 // collectNATSMetrics collects metrics from NATS streams
 func (c *Collector) collectNATSMetrics(ctx context.Context) {
-	log := log.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
 	// List all Exchanges to get their stream names
 	exchangeList := &conduitv1alpha1.ExchangeList{}
 	if err := c.client.List(ctx, exchangeList); err != nil {
-		log.Error(err, "Failed to list Exchanges for NATS metrics")
+		logger.Error(err, "Failed to list Exchanges for NATS metrics")
 		return
 	}
 
@@ -127,7 +127,7 @@ func (c *Collector) collectNATSMetrics(ctx context.Context) {
 		// Get stream info
 		streamInfo, err := c.natsClient.GetStreamInfo(streamName)
 		if err != nil {
-			log.Error(err, "Failed to get stream info", "stream", streamName, "exchange", exchange.Name)
+			logger.Error(err, "Failed to get stream info", "stream", streamName, "exchange", exchange.Name)
 			continue
 		}
 
@@ -154,7 +154,7 @@ func (c *Collector) collectNATSMetrics(ctx context.Context) {
 		if consumerName != "" {
 			consumerInfo, err := c.natsClient.GetConsumerInfo(streamName, consumerName)
 			if err != nil {
-				log.Error(err, "Failed to get consumer info", "consumer", consumerName, "exchange", exchange.Name)
+				logger.Error(err, "Failed to get consumer info", "consumer", consumerName, "exchange", exchange.Name)
 				continue
 			}
 

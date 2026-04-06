@@ -3,7 +3,7 @@
 Simple example of creating an Exchange and sending messages using the Conduit Python client.
 
 This demonstrates:
-1. Creating an Exchange via the Conduit API
+1. Creating an Exchange via Kubernetes API
 2. Sending messages to the Exchange
 3. Subscribing to responses
 4. Cleaning up resources
@@ -17,24 +17,26 @@ from conduit_client import Conduit, ExchangeRequest
 
 async def main():
     # Configuration from environment variables
-    api_url = os.getenv("API_URL", "http://localhost:8090")
     worker_image = os.getenv("WORKER_IMAGE", "conduit/examples/echo:go")
     exchange_name = os.getenv("EXCHANGE_NAME", "simple-send-py")
+    namespace = os.getenv("NAMESPACE", "default")
+    nats_url = os.getenv("NATS_URL", "nats://conduit-nats.conduit-system.svc.cluster.local:4222")
 
     print("Conduit Simple Send Example (Python)")
     print("=" * 40)
-    print(f"API Server: {api_url}")
+    print(f"Namespace: {namespace}")
+    print(f"NATS URL: {nats_url}")
     print(f"Worker Image: {worker_image}")
     print(f"Exchange Name: {exchange_name}\n")
 
-    conduit = Conduit(api_base_url=api_url)
+    conduit = Conduit(nats_url=nats_url, namespace=namespace)
 
-    # Create Exchange via API
+    # Create Exchange via Kubernetes API
     print("Creating Exchange...")
     exchange = await conduit.create_exchange_client(
         ExchangeRequest(
             name=exchange_name,
-            namespace="default",
+            namespace=namespace,
             image=worker_image,
         )
     )

@@ -26,39 +26,48 @@ func BuildPodForExchange(exchange *conduitv1alpha1.Exchange, streamName, consume
 	// Generate pod name based on Exchange name
 	podName := fmt.Sprintf("%s-pod", exchange.Name)
 
-	// Build environment variables
-	env := buildEnvVars(exchange, streamName, consumerName)
+	// Start with the user-provided template
+	template := exchange.Spec.Template.DeepCopy()
 
-	// Add user-specified env vars
-	env = append(env, exchange.Spec.Env...)
+	// Build Conduit-specific environment variables
+	conduitEnv := buildEnvVars(exchange, streamName, consumerName)
 
+	// Find or create the main container (first container, or create one if none exist)
+	var mainContainer *corev1.Container
+	if len(template.Spec.Containers) == 0 {
+		// No containers defined, create a default one
+		template.Spec.Containers = []corev1.Container{{
+			Name: "exchange",
+		}}
+	}
+	mainContainer = &template.Spec.Containers[0]
+
+	// Inject Conduit environment variables (prepend so user vars can override if needed)
+	mainContainer.Env = append(conduitEnv, mainContainer.Env...)
+
+	// Ensure RestartPolicy is set to Never (controller handles restarts)
+	template.Spec.RestartPolicy = corev1.RestartPolicyNever
+
+	// Build the pod, merging template metadata with required labels
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      podName,
-			Namespace: exchange.Namespace,
-			Labels: map[string]string{
-				"app.kubernetes.io/name":       "conduit",
-				"app.kubernetes.io/instance":   exchange.Name,
-				"app.kubernetes.io/component":  "exchange",
-				"app.kubernetes.io/managed-by": "conduit-operator",
-				"conduit.mnke.org/exchange":    exchange.Name,
-			},
+			Name:        podName,
+			Namespace:   exchange.Namespace,
+			Labels:      template.Labels,
+			Annotations: template.Annotations,
 		},
-		Spec: corev1.PodSpec{
-			ServiceAccountName: exchange.Spec.ServiceAccountName,
-			RestartPolicy:      corev1.RestartPolicyNever, // Controller handles restarts
-			ImagePullSecrets:   exchange.Spec.ImagePullSecrets,
-			Containers: []corev1.Container{
-				{
-					Name:            "exchange",
-					Image:           exchange.Spec.Image,
-					ImagePullPolicy: exchange.Spec.ImagePullPolicy,
-					Env:             env,
-					Resources:       exchange.Spec.Resources,
-				},
-			},
-		},
+		Spec: template.Spec,
 	}
+
+	// Ensure required labels are set
+	if pod.Labels == nil {
+		pod.Labels = make(map[string]string)
+	}
+	pod.Labels["app.kubernetes.io/name"] = "conduit"
+	pod.Labels["app.kubernetes.io/instance"] = exchange.Name
+	pod.Labels["app.kubernetes.io/component"] = "exchange"
+	pod.Labels["app.kubernetes.io/managed-by"] = "conduit-operator"
+	pod.Labels["conduit.mnke.org/exchange"] = exchange.Name
 
 	return pod, nil
 }

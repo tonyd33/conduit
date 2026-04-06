@@ -1,7 +1,38 @@
 """Type definitions for Conduit API."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
+
+
+@dataclass
+class EnvVar:
+    """Environment variable for a container."""
+
+    name: str
+    value: str
+
+
+@dataclass
+class VolumeMount:
+    """Volume mount configuration."""
+
+    name: str
+    mount_path: str
+    read_only: Optional[bool] = None
+
+
+@dataclass
+class Volume:
+    """
+    Volume that can be mounted by containers.
+    Simplified to support common volume types.
+    """
+
+    name: str
+    empty_dir: Optional[dict] = None
+    config_map: Optional[dict] = None
+    secret: Optional[dict] = None
+    persistent_volume_claim: Optional[dict] = None
 
 
 @dataclass
@@ -14,12 +45,16 @@ class ExchangeRequest:
         image: Container image for the Exchange worker
         namespace: Kubernetes namespace (defaults to "default")
         env: Optional environment variables
+        volume_mounts: Optional volume mounts
+        volumes: Optional volumes
     """
 
     name: str
     image: str
     namespace: str = "default"
-    env: Optional[dict[str, str]] = None
+    env: Optional[list[EnvVar]] = None
+    volume_mounts: Optional[list[VolumeMount]] = None
+    volumes: Optional[list[Volume]] = None
 
 
 @dataclass

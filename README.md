@@ -70,7 +70,7 @@ Conduit is designed for **any bidirectional workload** that requires reliable me
 - Kubernetes cluster (v1.11.3+)
 - `kubectl` (v1.11.3+)
 - NATS JetStream server
-- Go 1.24.0+ (for development)
+- Go 1.26.0+ (for development)
 
 ### Installation
 

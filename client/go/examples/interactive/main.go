@@ -15,24 +15,30 @@ import (
 
 func main() {
 	// Configuration
-	apiURL := getEnv("API_URL", "http://localhost:8090")
 	workerImage := getEnv("WORKER_IMAGE", "circus-chimp")
 	exchangeName := getEnv("EXCHANGE_NAME", "interactive-exchange")
+	namespace := getEnv("NAMESPACE", "default")
+	natsURL := getEnv("NATS_URL", "nats://conduit-nats.conduit-system.svc.cluster.local:4222")
 
 	fmt.Println("Conduit Interactive Client")
 	fmt.Println("===========================")
-	fmt.Printf("API Server: %s\n", apiURL)
+	fmt.Printf("Namespace: %s\n", namespace)
+	fmt.Printf("NATS URL: %s\n", natsURL)
 	fmt.Printf("Worker Image: %s\n", workerImage)
 	fmt.Printf("Exchange Name: %s\n\n", exchangeName)
 
-	// Create Conduit API client
-	conduitClient := conduit.NewConduit(apiURL, "") // No API key for local development
+	// Create Conduit Kubernetes client
+	conduitClient, err := conduit.NewConduit(natsURL, namespace)
+	if err != nil {
+		fmt.Printf("Error creating Conduit client: %v\n", err)
+		os.Exit(1)
+	}
 
-	// Create Exchange via API
+	// Create Exchange via Kubernetes API
 	fmt.Println("Creating Exchange...")
 	client, err := conduitClient.CreateExchangeClient(conduit.ExchangeRequest{
 		Name:      exchangeName,
-		Namespace: "default",
+		Namespace: namespace,
 		Image:     workerImage,
 	})
 	if err != nil {

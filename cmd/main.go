@@ -90,13 +90,15 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
-	flag.StringVar(&natsURL, "nats-url", "", "NATS server URL (e.g., nats://nats.default.svc:4222). If empty, NATS integration is disabled.")
+	flag.StringVar(&natsURL, "nats-url", "",
+		"NATS server URL (e.g., nats://nats.default.svc:4222). If empty, NATS integration is disabled.")
 	flag.StringVar(&natsNKeyFile, "nats-nkey-file", "", "Path to NATS NKey seed file")
 	flag.StringVar(&natsCredentialsFile, "nats-credentials-file", "", "Path to NATS JWT credentials file")
 	flag.StringVar(&natsTLSCertFile, "nats-tls-cert-file", "", "Path to NATS TLS client certificate")
 	flag.StringVar(&natsTLSKeyFile, "nats-tls-key-file", "", "Path to NATS TLS client key")
 	flag.StringVar(&natsTLSCAFile, "nats-tls-ca-file", "", "Path to NATS TLS CA certificate for server verification")
-	flag.StringVar(&apiServerAddr, "api-server-address", "", "The address the API server binds to (e.g., :8090). If empty, API server is disabled.")
+	flag.StringVar(&apiServerAddr, "api-server-address", "",
+		"The address the API server binds to (e.g., :8090). If empty, API server is disabled.")
 	opts := zap.Options{
 		Development: true,
 	}

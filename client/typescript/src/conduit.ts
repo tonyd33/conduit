@@ -2,73 +2,122 @@
  * Conduit client for managing Exchanges.
  */
 
-import { ExchangeRequest, ExchangeResource } from './api';
+import { ExchangeRequest, ExchangeResource, ConnectionInfo } from './api';
 import { ExchangeClient } from './exchange';
 import { connect } from 'nats';
+import * as k8s from '@kubernetes/client-node';
 
 export class Conduit {
-  private apiBaseUrl: string;
+  private k8sApi: k8s.CustomObjectsApi;
+  private namespace: string;
+  private natsURL: string;
 
-  constructor({ apiBaseUrl }: { apiBaseUrl: string }) {
-    this.apiBaseUrl = apiBaseUrl;
+  constructor({ namespace = 'default', natsURL }: { namespace?: string; natsURL: string }) {
+    const kc = new k8s.KubeConfig();
+    kc.loadFromDefault();
+
+    this.k8sApi = kc.makeApiClient(k8s.CustomObjectsApi);
+    this.namespace = namespace;
+    this.natsURL = natsURL;
   }
 
   /**
-   * Create Exchange from the API.
+   * Create Exchange CR via Kubernetes API.
    * @private
    */
-  private async createExchange(req: ExchangeRequest): Promise<ExchangeResource> {
-    const url = `${this.apiBaseUrl}/api/v1/exchanges`;
+  private async createExchange(req: ExchangeRequest): Promise<void> {
+    const namespace = req.namespace || this.namespace;
 
-    const headers = new Headers({
-      'Content-Type': 'application/json',
-    });
-
-    const body = {
-      name: req.name,
-      namespace: req.namespace || 'default',
+    // Build the container spec
+    const container: k8s.V1Container = {
+      name: 'exchange',
       image: req.image,
-      ...(req.env ? { env: req.env } : {}),
+      imagePullPolicy: "Never",
     };
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-    });
-
-    if (response.status !== 201) {
-      const text = await response.text();
-      throw new Error(
-        `Failed to create Exchange (status ${response.status}): ${text}`
-      );
+    if (req.env && req.env.length > 0) {
+      container.env = req.env;
     }
 
-    return (await response.json()) as ExchangeResource;
+    if (req.volumeMounts && req.volumeMounts.length > 0) {
+      container.volumeMounts = req.volumeMounts;
+    }
+
+    // Build the pod spec
+    const podSpec: k8s.V1PodSpec = {
+      containers: [container],
+    };
+
+    if (req.volumes && req.volumes.length > 0) {
+      podSpec.volumes = req.volumes;
+    }
+
+    // Build the Exchange CR
+    const exchangeCR = {
+      apiVersion: 'conduit.mnke.org/v1alpha1',
+      kind: 'Exchange',
+      metadata: {
+        name: req.name,
+        namespace: namespace,
+      },
+      spec: {
+        template: {
+          spec: podSpec,
+        },
+      },
+    };
+
+    try {
+      await this.k8sApi.createNamespacedCustomObject(
+        'conduit.mnke.org',
+        'v1alpha1',
+        namespace,
+        'exchanges',
+        exchangeCR
+      );
+    } catch (error: any) {
+      throw new Error(`Failed to create Exchange: ${error.body?.message || error.message}`);
+    }
   }
 
   /**
-   * Get Exchange information from the API.
+   * Get Exchange CR from Kubernetes API.
    * @private
    */
   private async getExchange(
     name: string,
     namespace: string
   ): Promise<ExchangeResource> {
-    const url = `${this.apiBaseUrl}/api/v1/exchanges/${namespace}/${name}`;
+    try {
+      const response = await this.k8sApi.getNamespacedCustomObject(
+        'conduit.mnke.org',
+        'v1alpha1',
+        namespace,
+        'exchanges',
+        name
+      );
 
-    const headers = new Headers({
-      'Content-Type': 'application/json',
-    });
+      const exchange = response.body as any;
 
-    const response = await fetch(url, { headers });
+      // Extract connection info from Exchange status
+      const connectionInfo: ConnectionInfo = {
+        natsURL: this.natsURL,
+        streamName: exchange.status?.streamName || '',
+        inputSubject: exchange.spec?.stream?.subjects?.input || `exchange.${exchange.metadata.uid}.input`,
+        outputSubject: exchange.spec?.stream?.subjects?.output || `exchange.${exchange.metadata.uid}.output`,
+      };
 
-    if (response.status !== 200) {
-      const text = await response.text();
-      throw new Error(`Failed to get Exchange (status ${response.status}): ${text}`);
+      return {
+        name: exchange.metadata.name,
+        namespace: exchange.metadata.namespace,
+        uid: exchange.metadata.uid,
+        phase: exchange.status?.phase || 'Pending',
+        message: exchange.status?.message,
+        connectionInfo: connectionInfo,
+      };
+    } catch (error: any) {
+      throw new Error(`Failed to get Exchange: ${error.body?.message || error.message}`);
     }
-
-    return (await response.json()) as ExchangeResource;
   }
 
   /**
@@ -98,23 +147,19 @@ export class Conduit {
   }
 
   /**
-   * Delete an Exchange via the API.
+   * Delete an Exchange CR via Kubernetes API.
    */
   private async deleteExchange(name: string, namespace: string): Promise<void> {
-    const url = `${this.apiBaseUrl}/api/v1/exchanges/${namespace}/${name}`;
-
-    const headers = new Headers({
-      'Content-Type': 'application/json',
-    });
-
-    const response = await fetch(url, {
-      method: 'DELETE',
-      headers,
-    });
-
-    if (response.status !== 204) {
-      const text = await response.text();
-      throw new Error(`API error (status ${response.status}): ${text}`);
+    try {
+      await this.k8sApi.deleteNamespacedCustomObject(
+        'conduit.mnke.org',
+        'v1alpha1',
+        namespace,
+        'exchanges',
+        name
+      );
+    } catch (error: any) {
+      throw new Error(`Failed to delete Exchange: ${error.body?.message || error.message}`);
     }
   }
 

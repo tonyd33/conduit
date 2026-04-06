@@ -24,6 +24,7 @@ setup(
     ],
     python_requires=">=3.9",
     install_requires=[
+        "kubernetes>=30.0.0",
         "nats-py>=2.8.0",
     ],
 )

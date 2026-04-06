@@ -13,8 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-
-	_ "github.com/tonyd33/conduit/docs" // Import generated docs
+	// _ "github.com/tonyd33/conduit/docs" // Import generated docs
 )
 
 // @title Conduit API
@@ -357,7 +356,7 @@ func (s *Server) deleteExchange(w http.ResponseWriter, r *http.Request, path str
 // @Router /healthz [get]
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("ok"))
+	_, _ = w.Write([]byte("ok"))
 }
 
 // Helper functions
@@ -365,7 +364,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
+	_ = json.NewEncoder(w).Encode(data)
 }
 
 func (s *Server) writeError(w http.ResponseWriter, status int, message string) {
